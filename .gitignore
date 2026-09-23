@@ -1,18 +1,31 @@
-# dependencies
-node_modules/
+# Node modules
+/node_modules
 
-# build / artifacts
-artifacts/
-cache/
-coverage/
-coverage.json
-typechain-types/
+# Compilation output
+/dist
 
-# environment
+# pnpm deploy output
+/bundle
+
+# Hardhat Build Artifacts
+/artifacts
+
+# Hardhat compilation (v2) support directory
+/cache
+
+# Typechain output
+/types
+
+# Environment files
 .env
 .env.*
 !.env.example
 
-# misc
-.DS_Store
-*.log
+# Hardhat coverage reports
+/coverage
+
+# Gas snapshot files
+/.gas-snapshot
+
+# Snapshot cheatcodes output
+/snapshots
