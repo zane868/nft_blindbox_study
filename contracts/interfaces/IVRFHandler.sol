@@ -25,16 +25,6 @@ interface IVRFHandler {
     ) external returns (uint256 requestId);
 
     /**
-     * @dev VRF回调函数
-     * @param requestId 请求ID
-     * @param randomWords 随机数数组
-     */
-    function fulfillRandomWords(
-        uint256 requestId,
-        uint256[] memory randomWords
-    ) external;
-
-    /**
      * @dev 获取请求对应的tokenId
      * @param requestId 请求ID
      * @return tokenId token ID

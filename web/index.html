@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NFT 盲盒验证界面</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.0/dist/ethers.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1115; --card: #1a1d24; --border: #2a2e38; --text: #e6e8ee; --muted: #8b91a0;
+      --accent: #4f8cff; --green: #34d399; --red: #f87171; --yellow: #fbbf24; --purple: #a78bfa; --gold: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.6; padding: 32px 16px;
+    }
+    .wrap { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 14px; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .kv { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+    .kv:last-child { border-bottom: none; }
+    .kv .k { color: var(--muted); }
+    .kv .v { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; text-align: right; }
+    button { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 10px 16px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+    button:hover { opacity: .9; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    input, select { background: #0f1115; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px 12px; font-size: 14px; font-family: ui-monospace, Menlo, Consolas, monospace; flex: 1; min-width: 120px; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge.ok { background: rgba(52,211,153,.15); color: var(--green); }
+    .badge.err { background: rgba(248,113,113,.15); color: var(--red); }
+    .badge.warn { background: rgba(251,191,36,.15); color: var(--yellow); }
+    .status { font-size: 13px; color: var(--muted); min-height: 18px; margin-top: 10px; }
+    .status.ok { color: var(--green); } .status.err { color: var(--red); }
+    .rarity { font-weight: 700; }
+    .r-0 { color: #9ca3af; } .r-1 { color: var(--accent); } .r-2 { color: var(--purple); } .r-3 { color: var(--gold); }
+    .box-list { margin-top: 10px; }
+    .box-item { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+    .box-item .id { font-family: ui-monospace, Menlo, Consolas, monospace; }
+    code { background: #0f1115; padding: 2px 6px; border-radius: 6px; font-size: 12px; }
+    .hint { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>NFT 盲盒验证界面</h1>
+    <p class="sub">Sepolia · 买盲盒 → 等待 VRF 回调 → 查看稀有度</p>
+
+    <div class="card">
+      <h2>钱包</h2>
+      <div class="row">
+        <button id="btnConnect">连接钱包</button>
+        <span id="networkBadge" class="badge warn">未连接</span>
+        <span id="ownerBadge" class="badge warn" style="display:none"></span>
+      </div>
+      <div class="kv"><span class="k">账户</span><span class="v" id="account">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>合约信息</h2>
+      <div class="row" style="margin-bottom:10px">
+        <button class="secondary" id="btnRefresh">刷新</button>
+      </div>
+      <div class="kv"><span class="k">名称 / 符号</span><span class="v" id="nameSymbol">—</span></div>
+      <div class="kv"><span class="k">版本</span><span class="v" id="version">—</span></div>
+      <div class="kv"><span class="k">已售 / 总量</span><span class="v" id="supply">—</span></div>
+      <div class="kv"><span class="k">销售状态</span><span class="v" id="saleActive">—</span></div>
+      <div class="kv"><span class="k">阶段</span><span class="v" id="salePhase">—</span></div>
+      <div class="kv"><span class="k">价格</span><span class="v" id="salePrice">—</span></div>
+      <div class="kv"><span class="k">每钱包上限</span><span class="v" id="maxWallet">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>购买盲盒</h2>
+      <div class="row">
+        <button id="btnBuy">买一个盲盒</button>
+        <span class="hint">金额 = 价格（自动带）</span>
+      </div>
+      <div class="status" id="buyStatus"></div>
+      <div class="box-list" id="myBoxes"></div>
+    </div>
+
+    <div class="card">
+      <h2>按 tokenId 查询</h2>
+      <div class="row">
+        <input id="qTokenId" type="text" placeholder="tokenId" />
+        <button id="btnQuery">查询</button>
+      </div>
+      <div class="status" id="queryStatus"></div>
+    </div>
+
+    <div class="card">
+      <h2>Owner 面板</h2>
+      <div class="row" style="margin-bottom:8px">
+        <label class="hint">阶段</label>
+        <select id="setPhase">
+          <option value="0">NotStarted</option>
+          <option value="1">WhiteList</option>
+          <option value="2">Public</option>
+        </select>
+        <button id="btnSetPhase">设置阶段</button>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <label class="hint">价格(ETH)</label>
+        <input id="setPrice" type="text" placeholder="0.001" />
+        <button id="btnSetPrice">设置价格</button>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <label class="hint">每钱包上限</label>
+        <input id="setMax" type="text" placeholder="1000" />
+        <button id="btnSetMax">设置上限</button>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <label class="hint">最大供应量</label>
+        <input id="setMaxSupply" type="text" placeholder="100000" />
+        <button id="btnSetMaxSupply">设置供应量</button>
+      </div>
+      <div class="row">
+        <label class="hint">baseURI</label>
+        <input id="setBase" type="text" placeholder="https://..." />
+        <button id="btnSetBase">设置 URI</button>
+      </div>
+      <div class="kv" style="margin-top:8px"><span class="k">合约余额</span><span class="v" id="contractBalance">—</span></div>
+      <div class="row" style="margin-top:8px">
+        <button class="secondary" id="btnWithdraw">提取资金 (withdraw)</button>
+      </div>
+      <div class="status" id="ownerStatus"></div>
+    </div>
+  </div>
+
+  <script>
+    const NFT_PROXY = "0xf2C9b17615Df0233bd2b0B8a46591D43156dB8A7";
+    const CHAIN_ID = 11155111n;
+
+    const NFT_ABI = [
+      "function name() view returns (string)",
+      "function symbol() view returns (string)",
+      "function totalSupply() view returns (uint256)",
+      "function maxSupply() view returns (uint256)",
+      "function balanceOf(address owner) view returns (uint256)",
+      "function ownerOf(uint256 tokenId) view returns (address)",
+      "function tokenURI(uint256 tokenId) view returns (string)",
+      "function tokenRarity(uint256) view returns (uint8)",
+      "function blindBoxes(uint256) view returns (bool purchased, bool revealed, uint256 purchaseTime, uint256 revealTime)",
+      "function getSaleInfo() view returns (bool active, uint8 phase, uint256 currentPrice, uint256 maxWallet)",
+      "function getVersion() view returns (uint256)",
+      "function myTokenIds() view returns (uint256[])",
+      "function owner() view returns (address)",
+      "function purchaseBox() payable",
+      "function setPrice(uint256 _price)",
+      "function setSaleActive(bool _active)",
+      "function setSalePhase(uint8 _phase)",
+      "function setMaxPerWallet(uint256 _max)",
+      "function setMaxSupply(uint256 _maxSupply)",
+      "function setBaseURI(string baseURI)",
+      "function baseURI() view returns (string)",
+      "function withdraw()",
+      "event BoxPurchased(address indexed buyer, uint256 indexed tokenId)",
+      "event BoxRevealed(uint256 indexed tokenId, uint8 rarity)",
+      "event RarityAssigned(uint256 indexed tokenId, uint8 rarity)",
+    ];
+
+    const RARITY = { 0: ["Common", "r-0"], 1: ["Rare", "r-1"], 2: ["Epic", "r-2"], 3: ["Legendary", "r-3"] };
+    const PHASE = { 0: "NotStarted", 1: "WhiteList", 2: "Public" };
+
+    let provider = null, signer = null, account = null, nft = null;
+
+    const $ = (id) => document.getElementById(id);
+    function setStatus(id, msg, cls) { const el = $(id); el.textContent = msg; el.className = "status" + (cls ? " " + cls : ""); }
+    function fmtEth(wei) { try { return ethers.formatEther(wei) + " ETH"; } catch { return wei.toString(); } }
+
+    const SEPOLIA_HEX = "0xaa36a7";
+
+    async function switchToSepolia() {
+      try {
+        await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: SEPOLIA_HEX }] });
+      } catch (e) {
+        if (e.code === 4902) {
+          await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{ chainId: SEPOLIA_HEX, chainName: "Sepolia", nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 }, rpcUrls: ["https://rpc.sepolia.org"], blockExplorerUrls: ["https://sepolia.etherscan.io"] }],
+          });
+        } else { throw e; }
+      }
+    }
+
+    async function connect() {
+      if (!window.ethereum) { setStatus("buyStatus", "未检测到 MetaMask。", "err"); return; }
+      provider = new ethers.BrowserProvider(window.ethereum);
+      let net = await provider.getNetwork();
+      if (net.chainId !== CHAIN_ID) {
+        setStatus("buyStatus", "检测到 chainId " + net.chainId + "，正在请求切换到 Sepolia…");
+        await switchToSepolia();
+        provider = new ethers.BrowserProvider(window.ethereum);
+        net = await provider.getNetwork();
+        if (net.chainId !== CHAIN_ID) {
+          $("networkBadge").textContent = "错误网络 (chainId " + net.chainId + ")";
+          $("networkBadge").className = "badge err";
+          setStatus("buyStatus", "切换失败，仍为 chainId " + net.chainId + "。请检查是否有多余的钱包插件。", "err");
+          return;
+        }
+      }
+      const accounts = await provider.send("eth_requestAccounts", []);
+      signer = await provider.getSigner();
+      account = accounts[0];
+      $("account").textContent = account;
+      $("networkBadge").textContent = "Sepolia ✓";
+      $("networkBadge").className = "badge ok";
+      $("btnConnect").textContent = "已连接";
+
+      nft = new ethers.Contract(NFT_PROXY, NFT_ABI, signer);
+      const nftView = new ethers.Contract(NFT_PROXY, NFT_ABI, provider);
+      const owner = await nftView.owner();
+      const isOwner = owner.toLowerCase() === account.toLowerCase();
+      $("ownerBadge").textContent = isOwner ? "你是 owner" : "非 owner";
+      $("ownerBadge").className = "badge " + (isOwner ? "ok" : "warn");
+      $("ownerBadge").style.display = "inline-block";
+
+      // 监听揭示事件
+      nftView.on("BoxRevealed", (tokenId, rarity) => {
+        renderMyBoxes();
+      });
+
+      await refresh();
+    }
+
+    async function refresh() {
+      if (!nft) return;
+      const v = new ethers.Contract(NFT_PROXY, NFT_ABI, provider);
+      const [name, symbol, total, max, info, base, version] = await Promise.all([
+        v.name(), v.symbol(), v.totalSupply(), v.maxSupply(), v.getSaleInfo(), v.baseURI(), v.getVersion(),
+      ]);
+      $("nameSymbol").textContent = name + " / " + symbol;
+      $("version").textContent = "v" + version.toString();
+      $("supply").textContent = total.toString() + " / " + max.toString();
+      $("saleActive").textContent = info.active ? "已开启" : "未开启";
+      $("saleActive").style.color = info.active ? "var(--green)" : "var(--red)";
+      $("salePhase").textContent = PHASE[Number(info.phase)] ?? info.phase.toString();
+      $("salePrice").textContent = fmtEth(info.currentPrice);
+      $("maxWallet").textContent = info.maxWallet.toString();
+      // 预填 owner 面板当前值
+      $("setPhase").value = Number(info.phase);
+      $("setPrice").value = ethers.formatEther(info.currentPrice);
+      $("setMax").value = info.maxWallet.toString();
+      $("setMaxSupply").value = max.toString();
+      $("setBase").value = base;
+      const bal = await provider.getBalance(NFT_PROXY);
+      $("contractBalance").textContent = ethers.formatEther(bal) + " ETH";
+      await renderMyBoxes();
+    }
+
+    async function buyBox() {
+      if (!nft) { setStatus("buyStatus", "请先连接钱包。", "err"); return; }
+      const v = new ethers.Contract(NFT_PROXY, NFT_ABI, provider);
+      const info = await v.getSaleInfo();
+      try {
+        setStatus("buyStatus", "正在发送交易…");
+        // purchaseBox 会 mint + 跨合约调 VRF 协调器，显式给足 gas 避免 estimateGas 低估
+        const tx = await nft.purchaseBox({ value: info.currentPrice, gasLimit: 1500000n });
+        $("buyStatus").textContent = "";
+        setStatus("buyStatus", "交易已发送，等待确认…");
+        const receipt = await tx.wait();
+        const evt = receipt.logs
+          .map((l) => { try { return v.interface.parseLog(l); } catch { return null; } })
+          .find((e) => e && e.name === "BoxPurchased");
+        const tokenId = evt ? evt.args.tokenId.toString() : "?";
+        setStatus("buyStatus", "✓ 已购买 tokenId=" + tokenId + "，等待 VRF 揭示（30s~2min）…", "ok");
+        await renderMyBoxes();
+        await refresh();
+      } catch (e) {
+        console.error(e);
+        setStatus("buyStatus", "出错：" + (e.reason || e.shortMessage || e.message || e), "err");
+      }
+    }
+
+    async function renderMyBoxes() {
+      const v = new ethers.Contract(NFT_PROXY, NFT_ABI, provider);
+      const list = $("myBoxes");
+      list.innerHTML = "";
+      const ids = await v.myTokenIds({ from: account });
+      if (ids.length === 0) {
+        list.innerHTML = '<div class="hint">当前账户还没有盲盒。</div>';
+        return;
+      }
+      for (const id of ids) {
+        await renderBoxItem(v, list, id);
+      }
+    }
+
+    async function renderBoxItem(v, list, tokenId) {
+      const box = await v.blindBoxes(tokenId);
+      const div = document.createElement("div");
+      div.className = "box-item";
+      let rarityHtml = '<span class="hint">待揭示…</span>';
+      if (box.revealed) {
+        const r = Number(await v.tokenRarity(tokenId));
+        const [name, cls] = RARITY[r] || [r, "r-0"];
+        rarityHtml = '<span class="rarity ' + cls + '">' + name + "</span>";
+      }
+      div.innerHTML =
+        '<div><span class="id">#' + tokenId.toString() + '</span> ' + rarityHtml + "</div>" +
+        '<div class="hint">revealed: ' + box.revealed + " | URI: " + (await v.tokenURI(tokenId)) + "</div>";
+      list.appendChild(div);
+    }
+
+    async function queryToken() {
+      const raw = $("qTokenId").value.trim();
+      if (!/^\d+$/.test(raw)) { setStatus("queryStatus", "tokenId 必须是正整数。", "err"); return; }
+      const v = new ethers.Contract(NFT_PROXY, NFT_ABI, provider);
+      try {
+        const tokenId = BigInt(raw);
+        const owner = await v.ownerOf(tokenId);
+        const box = await v.blindBoxes(tokenId);
+        const rarity = Number(await v.tokenRarity(tokenId));
+        const rarityName = (box.revealed && RARITY[rarity]) ? RARITY[rarity][0] : "待揭示";
+        setStatus("queryStatus",
+          "owner: " + owner + " | revealed: " + box.revealed + " | rarity: " + rarityName + " | URI: " + (await v.tokenURI(tokenId)),
+          box.revealed ? "ok" : "");
+      } catch (e) {
+        setStatus("queryStatus", "查询失败：" + (e.reason || e.shortMessage || e.message || e), "err");
+      }
+    }
+
+    // ===== Owner 面板 =====
+    async function ownerCall(fn, args, okMsg) {
+      if (!nft) { setStatus("ownerStatus", "请先连接钱包。", "err"); return; }
+      try {
+        setStatus("ownerStatus", "发送中…");
+        const tx = await nft[fn](...args);
+        await tx.wait();
+        setStatus("ownerStatus", "✓ " + okMsg, "ok");
+        await refresh();
+      } catch (e) {
+        setStatus("ownerStatus", "出错：" + (e.reason || e.shortMessage || e.message || e), "err");
+      }
+    }
+
+    $("btnConnect").addEventListener("click", connect);
+    $("btnRefresh").addEventListener("click", refresh);
+    $("btnBuy").addEventListener("click", buyBox);
+    $("btnQuery").addEventListener("click", queryToken);
+    $("btnSetPhase").addEventListener("click", () => ownerCall("setSalePhase", [Number($("setPhase").value)], "阶段已设置"));
+    $("btnSetPrice").addEventListener("click", () => ownerCall("setPrice", [ethers.parseEther($("setPrice").value || "0")], "价格已设置"));
+    $("btnSetMax").addEventListener("click", () => ownerCall("setMaxPerWallet", [BigInt($("setMax").value || "0")], "上限已设置"));
+    $("btnSetMaxSupply").addEventListener("click", () => ownerCall("setMaxSupply", [BigInt($("setMaxSupply").value || "0")], "最大供应量已设置"));
+    $("btnSetBase").addEventListener("click", () => ownerCall("setBaseURI", [$("setBase").value], "baseURI 已设置"));
+    $("btnWithdraw").addEventListener("click", () => ownerCall("withdraw", [], "资金已提取"));
+  </script>
+</body>
+</html>

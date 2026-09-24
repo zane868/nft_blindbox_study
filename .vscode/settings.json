@@ -21,5 +21,6 @@
   "[jsonc]": {
     "editor.formatOnSave": true,
     "editor.defaultFormatter": "esbenp.prettier-vscode"
-  }
+  },
+  "git.ignoreLimitWarning": true
 }

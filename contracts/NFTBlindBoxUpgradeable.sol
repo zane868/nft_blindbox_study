@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.s
 // 导入库和模块
 import "./handlers/VRFHandler.sol";
 import "./interfaces/IVRFHandler.sol"; // 导入 IVRFHandler 以使用 IVRFCallback 接口
-
+import "./libraries/MetadataLibrary.sol";
 import "./modules/SaleManager.sol"; //;
 import "./modules/BlindBoxStorage.sol"; //;
 
@@ -48,6 +48,10 @@ contract NFTBlindBoxUpgradeable is
     string private _baseTokenURI;
 
     uint version;
+
+    // 用户已购买的盲盒（追加在末尾，避免移动已有存储槽）
+    mapping(address => uint[]) private userBoxes;
+
     /**
      * @dev 初始化函数，在代理部署时调用
      * @param name NFT名称
@@ -70,12 +74,17 @@ contract NFTBlindBoxUpgradeable is
         __ERC721_init(name, symbol);
         __Ownable_init(msg.sender);
         saleManager = SaleManager(saleManagerAddress);
+        vrfHandler = VRFHandler(vrfHandlerAddress);
 
         maxSupply = _maxSupply;
         _baseTokenURI = baseURI;
         version = _version;
     }
 
+    /**
+     * @dev 购买盲盒
+     * @notice 使用SaleManager模块验证购买条件，使用VRFHandler请求随机数
+     */
     function purchaseBox() external payable virtual nonReentrant {
         uint userBalance = balanceOf(_msgSender());
         (bool canBuy, string memory reason) = saleManager.canPurchase(
@@ -95,6 +104,8 @@ contract NFTBlindBoxUpgradeable is
 
         //铸造NFT
         _safeMint(_msgSender(), tokenId);
+        uint[] storage tokenIds = userBoxes[_msgSender()];
+        tokenIds.push(tokenId);
 
         // 设置盲盒状态（使用存储库）
         blindBoxes[tokenId] = BlindBoxStorage.createBlindBox();
@@ -115,6 +126,20 @@ contract NFTBlindBoxUpgradeable is
 
     function getVersion() public view returns (uint) {
         return version;
+    }
+
+    /**
+     * @dev 设置 VRFHandler 地址（仅 owner）
+     */
+    function setVRFHandler(address _vrfHandler) external onlyOwner {
+        vrfHandler = VRFHandler(_vrfHandler);
+    }
+
+    /**
+     * @dev 设置最大供应量（仅 owner）
+     */
+    function setMaxSupply(uint256 _maxSupply) external onlyOwner {
+        maxSupply = _maxSupply;
     }
 
     function handleVRFCallback(
@@ -153,6 +178,116 @@ contract NFTBlindBoxUpgradeable is
 
         RarityLibrary.Rarity rarity = tokenRarity[tokenId];
         emit BoxRevealed(tokenId, rarity);
+    }
+
+    /**
+     * @dev 获取销售信息
+     */
+    function getSaleInfo()
+        public
+        view
+        returns (
+            bool active,
+            SaleManager.SalePhase phase,
+            uint256 currentPrice,
+            uint256 maxWallet
+        )
+    {
+        return (
+            saleManager.saleActive(),
+            saleManager.currentPhase(),
+            saleManager.price(),
+            saleManager.maxPerWallet()
+        );
+    }
+
+    /**
+     * @dev 获取tokenURI
+     * @notice 优化：已揭示的 NFT 按需计算 URI，而不是从 storage 读取，节省 gas
+     */
+    function tokenURI(
+        uint256 tokenId
+    ) public view override returns (string memory) {
+        require(ownerOf(tokenId) != address(0), "Token does not exist");
+
+        // 如果已揭示，按需计算 URI（而不是从 storage 读取，节省 gas）
+        if (blindBoxes[tokenId].revealed) {
+            RarityLibrary.Rarity rarity = tokenRarity[tokenId];
+            // 按需构建 URI，避免在 VRF 回调中存储完整字符串
+            return MetadataLibrary.buildTokenURI(_baseTokenURI, rarity);
+        }
+
+        // 未揭示时返回盲盒URI（使用MetadataLibrary）
+        return MetadataLibrary.buildBlindBoxURI(_baseTokenURI);
+    }
+
+    // ============ 元数据管理（使用库）============
+    /**
+     * @dev 设置基础URI
+     */
+    function setBaseURI(string memory baseURI) public onlyOwner {
+        _baseTokenURI = baseURI;
+    }
+
+    /**
+     * @dev 获取基础URI
+     */
+    function baseURI() public view returns (string memory) {
+        return _baseTokenURI;
+    }
+
+    /**
+     * @dev 设置tokenURI
+     */
+    function _setTokenURI(uint256 tokenId, string memory uri) internal {
+        _tokenURIs[tokenId] = uri;
+    }
+
+    // ============ 销售管理（委托给SaleManager）============
+    /**
+     * @dev 设置价格
+     */
+    function setPrice(uint256 _price) public onlyOwner {
+        saleManager.setPrice(_price);
+    }
+
+    /**
+     * @dev 设置销售状态
+     */
+    function setSaleActive(bool _active) public onlyOwner {
+        saleManager.setSaleActive(_active);
+    }
+
+    /**
+     * @dev 设置销售阶段
+     */
+    function setSalePhase(SaleManager.SalePhase _phase) public onlyOwner {
+        saleManager.setSalePhase(_phase);
+    }
+
+    /**
+     * @dev 设置每个钱包最大购买数
+     */
+    function setMaxPerWallet(uint256 _max) public onlyOwner {
+        saleManager.setMaxPerWallet(_max);
+    }
+
+    /**
+     * 获取当前用户所有购买的盲盒列表
+     */
+    function myTokenIds() public view returns (uint[] memory) {
+        return userBoxes[_msgSender()];
+    }
+
+    // ============ 辅助函数 ============
+    /**
+     * @dev 提取资金
+     */
+    function withdraw() public onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No balance to withdraw");
+        (bool success, ) = owner().call{value: balance}("");
+        require(success, "Transfer failed");
     }
 
     uint256[50] private __gap;

@@ -1,0 +1,11 @@
+{
+  "name": "稀有英雄 #0",
+  "description": "NFT 盲盒课程练习作品",
+  "image": "ipfs://bafybeifmrz22k355ljr4lcndh4qsrshmtpgipbdo2wbnxsfgw4kjcttycy/rare.png",
+  "attributes": [
+    {
+      "trait_type": "Rarity",
+      "value": "Rare"
+    }
+  ]
+}

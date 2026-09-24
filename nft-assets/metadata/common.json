@@ -1,0 +1,11 @@
+{
+  "name": "普通英雄",
+  "description": "NFT 盲盒课程练习作品",
+  "image": "ipfs://bafybeifmrz22k355ljr4lcndh4qsrshmtpgipbdo2wbnxsfgw4kjcttycy/common.png",
+  "attributes": [
+    {
+      "trait_type": "Rarity",
+      "value": "Common"
+    }
+  ]
+}

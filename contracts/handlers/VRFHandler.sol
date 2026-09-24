@@ -61,18 +61,25 @@ contract VRFHandler is Initializable, OwnableUpgradeable, IVRFHandler {
     }
 
     /**
-     * @dev VRF回调函数
+     * @dev Chainlink VRF v2.5 协调器实际回调的入口函数（rawFulfillRandomWords）。
      * @param requestId 请求ID
      * @param randomWords 随机数数组
      */
-    function fulfillRandomWords(
+    function rawFulfillRandomWords(
+        uint256 requestId,
+        uint256[] calldata randomWords
+    ) external onlyCoordinator {
+        _fulfillRandomWords(requestId, randomWords);
+    }
+
+    function _fulfillRandomWords(
         uint256 requestId,
         uint256[] memory randomWords
-    ) external override onlyCoordinator {
+    ) internal {
         uint256 tokenId = requestIdToTokenId[requestId];
         address callbackContract = requestIdToCallback[requestId];
 
-        if (tokenId == 0 || callbackContract == address(0)) {
+        if (callbackContract == address(0)) {
             revert InvalidRequestId();
         }
 
@@ -166,4 +173,15 @@ contract VRFHandler is Initializable, OwnableUpgradeable, IVRFHandler {
     function getRequestConfirmations() external view returns (uint16) {
         return requestConfirmations;
     }
+
+    // ============ 配置函数 ============
+    /**
+     * @dev 设置回调 gas 上限（仅 owner）
+     * @param _callbackGasLimit 新的回调 gas 上限
+     */
+    function setCallbackGasLimit(uint32 _callbackGasLimit) external onlyOwner {
+        callbackGasLimit = _callbackGasLimit;
+    }
+
+    uint256[50] private __gap;
 }
