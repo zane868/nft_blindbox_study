@@ -113,5 +113,14 @@ contract SaleManager is Initializable, OwnableUpgradeable {
         }
     }
 
+    event UserSaleDataCleared(address indexed user);
+
+    function clearUserData(address user) external onlyOwner {
+        require(user != address(0), "Invalid user");
+        delete whitelist[user];
+        delete whitelistMinted[user];
+        emit UserSaleDataCleared(user);
+    }
+
     uint256[50] private __gap;
 }

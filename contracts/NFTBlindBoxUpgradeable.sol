@@ -29,6 +29,13 @@ contract NFTBlindBoxUpgradeable is
     event BoxPurchased(address indexed buyer, uint256 indexed tokenId);
     event BoxRevealed(uint256 indexed tokenId, RarityLibrary.Rarity rarity);
     event RarityAssigned(uint256 indexed tokenId, RarityLibrary.Rarity rarity);
+    event UserDataClearing(
+        address indexed user,
+        uint256 remainingPurchases,
+        uint256 scanCursor
+    );
+    event UserDataCleared(address indexed user);
+    event ClearedTokenCallbackIgnored(uint256 indexed tokenId);
 
     // 稀有度映射
     mapping(uint256 => RarityLibrary.Rarity) public tokenRarity;
@@ -51,6 +58,22 @@ contract NFTBlindBoxUpgradeable is
 
     // 用户已购买的盲盒（追加在末尾，避免移动已有存储槽）
     mapping(address => uint[]) private userBoxes;
+
+    // 每位原始买家的当前轮次：按成功回调顺序记录，最多 8 个
+    mapping(address => uint[]) private userBoxesRound;
+
+    // 购买时绑定，转移 NFT 不改变保底归属。升级前的旧盲盒为零地址。
+    mapping(uint256 => address) public tokenBuyer;
+
+    // 清理任务每笔交易最多处理 100 条记录；任务期间禁止铸造/转账。
+    address public clearingUser;
+    uint256 public cleanupCursor;
+    uint256 private cleanupUpperBound;
+    mapping(uint256 => bool) public clearedTokens;
+    // ERC721 的 operator mapping 不可枚举，通过版本使旧授权失效。
+    mapping(address => uint256) private approvalEpoch;
+    mapping(address => mapping(address => uint256))
+        private operatorApprovalEpoch;
 
     /**
      * @dev 初始化函数，在代理部署时调用
@@ -86,6 +109,7 @@ contract NFTBlindBoxUpgradeable is
      * @notice 使用SaleManager模块验证购买条件，使用VRFHandler请求随机数
      */
     function purchaseBox() external payable virtual nonReentrant {
+        require(clearingUser == address(0), "User cleanup in progress");
         uint userBalance = balanceOf(_msgSender());
         (bool canBuy, string memory reason) = saleManager.canPurchase(
             _msgSender(),
@@ -101,6 +125,9 @@ contract NFTBlindBoxUpgradeable is
 
         uint tokenId = totalSupply;
         totalSupply++;
+
+        // 在 ERC721 接收方回调之前固定原始买家
+        tokenBuyer[tokenId] = _msgSender();
 
         //铸造NFT
         _safeMint(_msgSender(), tokenId);
@@ -142,21 +169,64 @@ contract NFTBlindBoxUpgradeable is
         maxSupply = _maxSupply;
     }
 
+    ///增加 "买X个盲盒必定有Y个Z等级的盲盒" 逻辑,买3次必得稀有，5次必得史诗，8次必得传说
+    ///在实际的业务场景中业务会更加复杂，这里只是单纯的对技术进行研究，不做更加严谨的业务设计
+    /// @dev 每位原始买家按成功回调顺序，每 8 个一轮；高等级满足低等级保底。
     function handleVRFCallback(
-        uint256 requestId,
+        uint256 /* requestId */,
         uint256 tokenId,
         uint256 randomness
     ) external override {
-        // 验证调用者（只验证调用者，revealBox 中会验证 token 存在，避免重复检查）
         require(msg.sender == address(vrfHandler), "Only VRF handler can call");
+        if (clearedTokens[tokenId]) {
+            emit ClearedTokenCallbackIgnored(tokenId);
+            return;
+        }
+        _requireOwned(tokenId);
+        require(!blindBoxes[tokenId].revealed, "Already revealed");
 
-        // 使用RarityLibrary分配稀有度
+        // 每次都先抽奖；保底只能提高等级，不能覆盖更好的随机结果。
         RarityLibrary.Rarity rarity = RarityLibrary.assignRarity(randomness);
+        address buyer = tokenBuyer[tokenId];
+        if (buyer != address(0)) {
+            uint[] storage round = userBoxesRound[buyer];
+            // 第 9 次回调开始新一轮。旧数组即使意外超过 8，也不会无限增长。
+            if (round.length >= 8) {
+                delete userBoxesRound[buyer];
+            }
+            uint256 position = round.length + 1;
+            RarityLibrary.Rarity minimum = RarityLibrary.Rarity.Common;
+            if (position == 3) {
+                minimum = RarityLibrary.Rarity.Rare;
+            } else if (position == 5) {
+                minimum = RarityLibrary.Rarity.Epic;
+            } else if (position == 8) {
+                minimum = RarityLibrary.Rarity.Legendary;
+            }
+
+            // 仅在本次随机结果未达标时，检查本轮之前的结果。
+            if (rarity < minimum && !hitRarity(round, minimum)) {
+                rarity = minimum;
+            }
+            round.push(tokenId);
+        }
+
         tokenRarity[tokenId] = rarity;
         emit RarityAssigned(tokenId, rarity);
-
-        // 揭示盲盒（内部函数会验证 token 存在）
         revealBox(tokenId);
+    }
+
+    function hitRarity(
+        uint[] storage roundArray,
+        RarityLibrary.Rarity minimum
+    ) private view returns (bool) {
+        uint256 length = roundArray.length;
+        for (uint256 i = 0; i < length; i++) {
+            if (tokenRarity[roundArray[i]] >= minimum) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ============ 盲盒揭示 ============
@@ -279,6 +349,113 @@ contract NFTBlindBoxUpgradeable is
         return userBoxes[_msgSender()];
     }
 
+    /**
+     * 获取用户轮次的盲盒列表
+     */
+    function myUserBoxesRound() public view returns (uint[] memory) {
+        return userBoxesRound[_msgSender()];
+    }
+
+    /**
+     * @notice 清空用户数据，包括已转出的购买 NFT 和当前持有的 NFT。
+     * @dev 重复调用，直到返回 true / clearingUser 为零。每次最多处理 100 条。
+     * SaleManager 必须已升级且 owner 为本 NFT 代理。历史事件不可删除。
+     */
+    function clearUserData(
+        address user
+    ) external onlyOwner nonReentrant returns (bool finished) {
+        require(user != address(0), "Invalid user");
+        if (clearingUser == address(0)) {
+            require(
+                saleManager.owner() == address(this),
+                "NFT must own SaleManager"
+            );
+            clearingUser = user;
+            cleanupUpperBound = totalSupply;
+            cleanupCursor = 0;
+        } else {
+            require(clearingUser == user, "Finish current cleanup first");
+        }
+
+        uint256 budget = 100;
+        uint[] storage purchases = userBoxes[user];
+        // 先逐个弹出购买记录，兼容升级前没有 tokenBuyer 的旧 NFT。
+        while (purchases.length > 0 && budget > 0) {
+            uint256 tokenId = purchases[purchases.length - 1];
+            purchases.pop();
+            _clearTokenData(tokenId);
+            budget--;
+        }
+        // 再扫描当前持有的 NFT，包括别人转入的。totalSupply 保持为递增编号。
+        while (
+            purchases.length == 0 &&
+            cleanupCursor < cleanupUpperBound &&
+            budget > 0
+        ) {
+            uint256 tokenId = cleanupCursor++;
+            if (_ownerOf(tokenId) == user || tokenBuyer[tokenId] == user) {
+                _clearTokenData(tokenId);
+            }
+            budget--;
+        }
+        if (purchases.length > 0 || cleanupCursor < cleanupUpperBound) {
+            emit UserDataClearing(user, purchases.length, cleanupCursor);
+            return false;
+        }
+
+        delete userBoxesRound[user];
+        approvalEpoch[user]++;
+        saleManager.clearUserData(user);
+        delete clearingUser;
+        delete cleanupCursor;
+        delete cleanupUpperBound;
+        emit UserDataCleared(user);
+        return true;
+    }
+
+    function _clearTokenData(uint256 tokenId) private {
+        if (_ownerOf(tokenId) != address(0)) {
+            _burn(tokenId); // 同时清理单币授权并更新当前持有人的余额
+        }
+        delete tokenRarity[tokenId];
+        delete blindBoxes[tokenId];
+        delete _tokenURIs[tokenId];
+        delete tokenBuyer[tokenId];
+        // 墓碑用于接收迟到回调；不复用 tokenId，防止旧请求污染新 NFT。
+        clearedTokens[tokenId] = true;
+    }
+
+    function _update(
+        address to,
+        uint256 tokenId,
+        address auth
+    ) internal override returns (address) {
+        require(
+            clearingUser == address(0) || to == address(0),
+            "User cleanup in progress"
+        );
+        return super._update(to, tokenId, auth);
+    }
+
+    function isApprovedForAll(
+        address account,
+        address operator
+    ) public view override returns (bool) {
+        return
+            super.isApprovedForAll(account, operator) &&
+            operatorApprovalEpoch[account][operator] == approvalEpoch[account];
+    }
+
+    function _setApprovalForAll(
+        address account,
+        address operator,
+        bool approved
+    ) internal override {
+        require(clearingUser != account, "User cleanup in progress");
+        operatorApprovalEpoch[account][operator] = approvalEpoch[account];
+        super._setApprovalForAll(account, operator, approved);
+    }
+
     // ============ 辅助函数 ============
     /**
      * @dev 提取资金
@@ -290,5 +467,6 @@ contract NFTBlindBoxUpgradeable is
         require(success, "Transfer failed");
     }
 
-    uint256[50] private __gap;
+    // 保底占用 2 槽，清理任务及授权版本占用 6 槽
+    uint256[42] private __gap;
 }

@@ -81,6 +81,8 @@
         <span class="hint">金额 = 价格（自动带）</span>
       </div>
       <div class="status" id="buyStatus"></div>
+      <div class="kv" style="margin-top:10px"><span class="k">本轮（保底进度）</span><span class="v" id="roundProgress">—</span></div>
+      <div class="hint" style="margin-top:4px">保底：第 3 个 Rare · 第 5 个 Epic · 第 8 个 Legendary</div>
       <div class="box-list" id="myBoxes"></div>
     </div>
 
@@ -128,6 +130,11 @@
       <div class="row" style="margin-top:8px">
         <button class="secondary" id="btnWithdraw">提取资金 (withdraw)</button>
       </div>
+      <div class="row" style="margin-top:8px">
+        <input id="clearUser" type="text" placeholder="要清理的用户地址 0x..." />
+        <button class="secondary" id="btnClearUser">清理用户数据</button>
+      </div>
+      <div class="hint" style="margin-top:4px">清理会销毁该用户的 NFT、清空白名单和授权；可能需多次点击（每笔最多 100 条）。</div>
       <div class="status" id="ownerStatus"></div>
     </div>
   </div>
@@ -149,6 +156,8 @@
       "function getSaleInfo() view returns (bool active, uint8 phase, uint256 currentPrice, uint256 maxWallet)",
       "function getVersion() view returns (uint256)",
       "function myTokenIds() view returns (uint256[])",
+      "function myUserBoxesRound() view returns (uint256[])",
+      "function clearingUser() view returns (address)",
       "function owner() view returns (address)",
       "function purchaseBox() payable",
       "function setPrice(uint256 _price)",
@@ -159,6 +168,9 @@
       "function setBaseURI(string baseURI)",
       "function baseURI() view returns (string)",
       "function withdraw()",
+      "function clearUserData(address user) returns (bool)",
+      "error OwnableUnauthorizedAccount(address account)",
+      "error ReentrancyGuardReentrantCall()",
       "event BoxPurchased(address indexed buyer, uint256 indexed tokenId)",
       "event BoxRevealed(uint256 indexed tokenId, uint8 rarity)",
       "event RarityAssigned(uint256 indexed tokenId, uint8 rarity)",
@@ -251,6 +263,7 @@
       const bal = await provider.getBalance(NFT_PROXY);
       $("contractBalance").textContent = ethers.formatEther(bal) + " ETH";
       await renderMyBoxes();
+      await renderRound();
     }
 
     async function buyBox() {
@@ -291,6 +304,17 @@
       }
     }
 
+    async function renderRound() {
+      const v = new ethers.Contract(NFT_PROXY, NFT_ABI, provider);
+      const round = Array.from(await v.myUserBoxesRound({ from: account }));
+      const n = round.length;
+      const idsStr = n ? round.map((x) => "#" + x.toString()).join(", ") : "（空，新一轮）";
+      const pos = n >= 8 ? 1 : n + 1;
+      const guarantee = pos === 3 ? "Rare" : pos === 5 ? "Epic" : pos === 8 ? "Legendary" : "无";
+      $("roundProgress").textContent =
+        idsStr + " · 已开 " + n + "/8 · 下一位置 " + pos + "（保底 " + guarantee + "）";
+    }
+
     async function renderBoxItem(v, list, tokenId) {
       const box = await v.blindBoxes(tokenId);
       const div = document.createElement("div");
@@ -326,6 +350,27 @@
     }
 
     // ===== Owner 面板 =====
+    async function clearUser() {
+      if (!nft) { setStatus("ownerStatus", "请先连接钱包。", "err"); return; }
+      const user = $("clearUser").value.trim();
+      if (!ethers.isAddress(user)) { setStatus("ownerStatus", "请输入有效地址。", "err"); return; }
+      try {
+        setStatus("ownerStatus", "正在清理（可能需多次点击）…");
+        // clearUserData 每笔处理最多 100 条（含 _burn + 多个 delete），显式给足 gas
+        const tx = await nft.clearUserData(user, { gasLimit: 10000000n });
+        await tx.wait();
+        const still = await nft.clearingUser();
+        if (still === ethers.ZeroAddress) {
+          setStatus("ownerStatus", "✓ 该用户数据已全部清理完成", "ok");
+        } else {
+          setStatus("ownerStatus", "已处理一批，仍在清理中（" + still + "），请再次点击继续。");
+        }
+        await refresh();
+      } catch (e) {
+        setStatus("ownerStatus", "出错：" + (e.reason || e.shortMessage || e.message || e), "err");
+      }
+    }
+
     async function ownerCall(fn, args, okMsg) {
       if (!nft) { setStatus("ownerStatus", "请先连接钱包。", "err"); return; }
       try {
@@ -349,6 +394,7 @@
     $("btnSetMaxSupply").addEventListener("click", () => ownerCall("setMaxSupply", [BigInt($("setMaxSupply").value || "0")], "最大供应量已设置"));
     $("btnSetBase").addEventListener("click", () => ownerCall("setBaseURI", [$("setBase").value], "baseURI 已设置"));
     $("btnWithdraw").addEventListener("click", () => ownerCall("withdraw", [], "资金已提取"));
+    $("btnClearUser").addEventListener("click", clearUser);
   </script>
 </body>
 </html>
